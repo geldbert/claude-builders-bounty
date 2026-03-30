@@ -1,0 +1,310 @@
+{
+  "name": "Weekly Dev Summary - Claude + GitHub",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "trigger",
+      "name": "Weekly Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/{{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}/commits",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{ $now.minus({days: 7}).toISOString() }}"
+            },
+            {
+              "name": "per_page",
+              "value": 100
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "commits",
+      "name": "Get Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "github-token",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/{{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}/issues",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "state",
+              "value": "closed"
+            },
+            {
+              "name": "since",
+              "value": "={{ $now.minus({days: 7}).toISOString() }}"
+            },
+            {
+              "name": "per_page",
+              "value": 100
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "issues",
+      "name": "Get Closed Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "github-token",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/{{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}/pulls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "state",
+              "value": "closed"
+            },
+            {
+              "name": "sort",
+              "value": "updated"
+            },
+            {
+              "name": "direction",
+              "value": "desc"
+            },
+            {
+              "name": "per_page",
+              "value": 100
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "prs",
+      "name": "Get Merged PRs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 600],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "github-token",
+          "name": "GitHub Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and summarize the week's activity\nconst commits = $('Get Commits').all();\nconst issues = $('Get Closed Issues').all();\nconst prs = $('Get Merged PRs').all();\n\n// Process commits\nconst commitList = commits[0]?.json?.map(c => ({\n  message: c.commit?.message?.split('\\n')[0] || 'No message',\n  author: c.commit?.author?.name || 'Unknown',\n  date: c.commit?.author?.date\n})) || [];\n\n// Process closed issues\nconst closedIssues = issues[0]?.json?.filter(i => i.closed_at).map(i => ({\n  title: i.title,\n  number: i.number,\n  labels: i.labels?.map(l => l.name).join(', ') || ''\n})) || [];\n\n// Process merged PRs\nconst mergedPRs = prs[0]?.json?.filter(p => p.merged_at).map(p => ({\n  title: p.title,\n  number: p.number,\n  author: p.user?.login\n})) || [];\n\n// Create summary object\nreturn {\n  week: new Date().toISOString().split('T')[0],\n  repo: `${$env.GITHUB_OWNER}/${$env.GITHUB_REPO}`,\n  stats: {\n    commits: commitList.length,\n    issuesClosed: closedIssues.length,\n    prsMerged: mergedPRs.length\n  },\n  commits: commitList.slice(0, 20),\n  issues: closedIssues.slice(0, 10),\n  pulls: mergedPRs.slice(0, 10)\n};"
+      },
+      "id": "process",
+      "name": "Process Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-20250514",
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "=Generate a weekly development summary for {{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}.\n\nData for the week ending {{ $json.week }}:\n\n## Statistics\n- {{ $json.stats.commits }} commits\n- {{ $json.stats.issuesClosed }} issues closed\n- {{ $json.stats.prsMerged }} PRs merged\n\n## Recent Commits\n{{ $json.commits.map(c => '- ' + c.message + ' (by ' + c.author + ')').join('\\n') }}\n\n## Closed Issues\n{{ $json.issues.map(i => '- #' + i.number + ': ' + i.title).join('\\n') }}\n\n## Merged PRs\n{{ $json.pulls.map(p => '- #' + p.number + ': ' + p.title + ' (by ' + p.author + ')').join('\\n') }}\n\nWrite a narrative summary in {{ $env.LANGUAGE || 'EN' }} language that:\n1. Highlights the main achievements this week\n2. Mentions key contributors\n3. Notes any significant changes or patterns\n4. Keep it concise (3-5 paragraphs)\n5. Use a professional but friendly tone\n\nFormat as Markdown."
+            }
+          ]
+        },
+        "maxTokens": 1000
+      },
+      "id": "claude",
+      "name": "Generate Summary",
+      "type": "n8n-nodes-base.anthropic",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": {
+        "anthropicApi": {
+          "id": "claude-api",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "='## Weekly Dev Summary - ' + $json.week + '\\n\\n**Repository:** {{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}\\n\\n---\\n\\n' + $json.content",
+        "subject": "=Weekly Dev Summary: {{ $env.GITHUB_OWNER }}/{{ $env.GITHUB_REPO }}"
+      },
+      "id": "email",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1250, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-creds",
+          "name": "SMTP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "webhook": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "message": "={{ $json.content }}"
+      },
+      "id": "slack",
+      "name": "Send to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1.1,
+      "position": [1250, 600],
+      "credentials": {
+        "slackApi": {
+          "id": "slack-creds",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Commits",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Closed Issues",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Merged PRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commits": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Closed Issues": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Merged PRs": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Data": {
+      "main": [
+        [
+          {
+            "node": "Process Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": []
+}
