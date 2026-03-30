@@ -1,0 +1,118 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Get PR Diff
+        id: diff
+        run: |
+          curl -sL "${{ github.event.pull_request.diff_url }}" > pr.diff
+          echo "diff_file=pr.diff" >> $GITHUB_OUTPUT
+
+      - name: Analyze with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 << 'EOF'
+          import os
+          import requests
+          import json
+
+          # Read diff
+          with open('pr.diff', 'r') as f:
+              diff = f.read()
+
+          # Get PR info
+          pr_title = "${{ github.event.pull_request.title }}"
+          pr_author = "${{ github.event.pull_request.user.login }}"
+          pr_files = "${{ github.event.pull_request.changed_files }}"
+          pr_additions = "${{ github.event.pull_request.additions }}"
+          pr_deletions = "${{ github.event.pull_request.deletions }}"
+
+          # Call Claude API
+          prompt = f"""Analyze this PR diff and provide a structured code review.
+
+          PR Title: {pr_title}
+          Author: {pr_author}
+          Files Changed: {pr_files}
+          Additions: +{pr_additions}
+          Deletions: -{pr_deletions}
+
+          Diff:
+          ```
+          {diff[:50000]}
+          ```
+
+          Respond with EXACTLY this Markdown format:
+
+          ## Summary
+          [2-3 sentences summarizing the changes]
+
+          ## Identified Risks
+          - [Risk 1]
+          - [Risk 2]
+
+          ## Improvement Suggestions
+          - [Suggestion 1]
+          - [Suggestion 2]
+
+          ## Confidence Score
+          **[Low/Medium/High]** — [Brief explanation]
+          """
+
+          response = requests.post(
+              'https://api.anthropic.com/v1/messages',
+              headers={
+                  'x-api-key': os.environ['ANTHROPIC_API_KEY'],
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json'
+              },
+              json={
+                  'model': 'claude-sonnet-4-20250514',
+                  'max_tokens': 2048,
+                  'messages': [{'role': 'user', 'content': prompt}]
+              }
+          )
+
+          result = response.json()
+          review = result['content'][0]['text']
+
+          # Save review
+          with open('review.md', 'w') as f:
+              f.write(review)
+
+          print(f"::set-output name=review::{review}")
+          EOF
+
+      - name: Post Review Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('review.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🤖 Claude Code Review\n\n${review}`
+            });
